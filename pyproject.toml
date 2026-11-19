@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echospeak"
+version = "0.2.0"
+description = "Silent smartphone command recognition from acoustic echoes (COMP_SCI 396, Group 5)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2", "numpy>=1.24", "scipy>=1.10", "PyYAML>=6"]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.4.6", "matplotlib>=3.7"]
+tune = ["optuna>=3.5"]
+dev = ["pytest>=7"]
+all = ["sounddevice>=0.4.6", "matplotlib>=3.7", "optuna>=3.5", "pytest>=7"]
+
+[project.scripts]
+echospeak = "echospeak.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

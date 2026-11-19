@@ -1,0 +1,80 @@
+probe:
+  sample_rate: 48000
+  tones_hz:
+  - 18000.0
+  - 18250.0
+  - 18500.0
+  - 18750.0
+  - 19000.0
+  - 19250.0
+  - 19500.0
+  - 19750.0
+  amplitude: 0.6
+data:
+  commands:
+  - NEXT
+  - BACK
+  - SELECT
+  - CANCEL
+  - START
+  - STOP
+  non_commands:
+  - REST
+  - CHEWING
+  - YAWNING
+  - TALKING
+  clip_pre_s: 0.75
+  clip_post_s: 2.25
+  window_s: 2.0
+  edge_margin_s: 0.1
+  eval_offset_s: 0.5
+features:
+  baseband_rate: 500
+  lowpass_hz: 110.0
+  frame_rate: 100
+  doppler_nfft: 64
+  doppler_max_hz: 80.0
+  iq_scale: 0.003
+  use_imu: false
+model:
+  branches: both
+  temporal: transformer
+  channels: 64
+  d_model: 96
+  layers: 2
+  heads: 4
+  dropout: 0.3
+augment:
+  enabled: true
+  time_stretch: 0.12
+  gain_log_std: 0.3
+  rotation: true
+  tone_phase_jitter: 0.3
+  tone_dropout: 0.15
+  noise_std: 0.1
+  time_masks: 2
+  time_mask_frac: 0.08
+  mixup_alpha: 0.0
+train:
+  epochs: 60
+  batch_size: 32
+  lr: 0.002
+  weight_decay: 0.02
+  warmup_frac: 0.05
+  label_smoothing: 0.1
+  ema_decay: 0.995
+  grad_clip: 1.0
+  seed: 0
+  device: auto
+  num_workers: 0
+  tta_shifts_s:
+  - -0.15
+  - 0.0
+  - 0.15
+gate:
+  threshold: 0.7
+  min_consecutive: 2
+  cooldown_s: 1.5
+  hop_s: 0.1
+  target_false_trigger: 0.02
+  imu_max_gyro_rms: 0.3
