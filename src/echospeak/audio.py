@@ -24,10 +24,13 @@ def read_wav(path: str | Path, channel: int = 0) -> tuple[np.ndarray, int]:
     return x, int(sr)
 
 
-def write_wav(path: str | Path, audio: np.ndarray, sample_rate: int) -> None:
-    """Write float32 WAV (keeps the full dynamic range of weak echoes)."""
+def write_wav(path: str | Path, audio: np.ndarray, sample_rate: int, pcm16: bool = False) -> None:
+    """Write a WAV: float32 by default, or 16-bit PCM (half the size; enough for a 16/24-bit mic)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    wavfile.write(str(path), int(sample_rate), np.asarray(audio, dtype=np.float32))
+    x = np.asarray(audio, dtype=np.float32)
+    if pcm16:
+        x = np.round(np.clip(x, -1.0, 32767 / 32768) * 32768).astype(np.int16)
+    wavfile.write(str(path), int(sample_rate), x)
 
 
 def require_sounddevice():

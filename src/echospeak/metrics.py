@@ -25,13 +25,10 @@ def macro_f1(cm: np.ndarray) -> float:
     return float(f1[present].mean()) if present.any() else 0.0
 
 
-def trigger_metrics(probs: np.ndarray, y: np.ndarray, n_commands: int, threshold: float,
-                    rejected: np.ndarray | None = None) -> dict:
+def trigger_metrics(probs: np.ndarray, y: np.ndarray, n_commands: int, threshold: float) -> dict:
     pred = probs.argmax(axis=1)
     conf = probs.max(axis=1)
     fires = (pred < n_commands) & (conf >= threshold)
-    if rejected is not None:
-        fires &= ~rejected
     is_cmd = y < n_commands
     out = {"threshold": float(threshold)}
     if is_cmd.any():
@@ -40,8 +37,6 @@ def trigger_metrics(probs: np.ndarray, y: np.ndarray, n_commands: int, threshold
         out["command_missed"] = float((~fires)[is_cmd].mean())
     if (~is_cmd).any():
         out["false_trigger_rate"] = float(fires[~is_cmd].mean())
-    if rejected is not None:
-        out["imu_rejected_fraction"] = float(rejected.mean())
     return out
 
 
@@ -57,10 +52,9 @@ def recommend_threshold(probs: np.ndarray, y: np.ndarray, n_commands: int, targe
 
 
 def summarize(probs: np.ndarray, y: np.ndarray, classes: list[str], n_commands: int,
-              threshold: float, rejected: np.ndarray | None = None) -> dict:
+              threshold: float) -> dict:
     labelled = y >= 0
     probs, y = probs[labelled], y[labelled]
-    rejected = rejected[labelled] if rejected is not None else None
     pred = probs.argmax(axis=1)
     cm = confusion(y, pred, len(classes))
     # Binary command-vs-non-command accuracy (what matters for false triggers).
@@ -72,7 +66,7 @@ def summarize(probs: np.ndarray, y: np.ndarray, classes: list[str], n_commands: 
         "command_vs_noncommand_accuracy": float((cmd_true == cmd_pred).mean()) if len(y) else float("nan"),
         "per_class_recall": {c: float(cm[i, i] / cm[i].sum()) for i, c in enumerate(classes) if cm[i].sum()},
         "confusion": cm.tolist(),
-        "trigger": trigger_metrics(probs, y, n_commands, threshold, rejected),
+        "trigger": trigger_metrics(probs, y, n_commands, threshold),
     }
     if (y < n_commands).any():
         m = y < n_commands

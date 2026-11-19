@@ -1,16 +1,18 @@
 """Manifest, baseband cache, held-out splits, CV folds and the training dataset.
 
-Dataset layout produced by ``echospeak session`` / ``import`` / ``synth``::
+Dataset layout produced by ``collect.py`` (and ``echospeak synth``)::
 
-    data/raw/<participant>/<session>/
-        session.json     participant, session, device, probe on/off, distance, ...
-        cues.csv         one row per prompted trial (label, GO sample, status)
-        session.wav      full continuous recording (duplex mode) or phone.wav
-        clips/<trial>.wav  one clip per trial, GO cue at ``clip_pre_s``
-        clips.csv        clip index (written by segmentation)
-        imu/<trial>.csv  optional per-clip IMU (t, ax, ay, az, gx, gy, gz)
+    data/
+        manifest.csv     every clip (rebuilt automatically after each session)
+        sessions.csv     one row per recorded session (log)
+        raw/<participant>/<session>/
+            session.json     participant, session, distance, condition, probe check, ...
+            cues.csv         one row per prompted trial (label, GO sample, probe, status)
+            session.wav      full continuous recording
+            clips/<trial>.wav  one clip per trial, GO cue at ``clip_pre_s``
+            clips.csv        clip index (written by segmentation)
 
-``echospeak index`` gathers every ``clips.csv`` into a single ``manifest.csv``.
+``echospeak index`` gathers every ``clips.csv`` into ``manifest.csv``.
 """
 
 from __future__ import annotations
@@ -30,12 +32,11 @@ from torch.utils.data import Dataset
 
 from .audio import read_wav
 from .config import Config
-from .features import frames_per_window, hop
 from .probe import demodulate
 
 MANIFEST_FIELDS = [
     "clip", "participant", "session", "trial", "label", "probe", "distance_cm",
-    "orientation", "condition", "device", "imu",
+    "orientation", "condition", "device",
 ]
 
 
@@ -51,16 +52,11 @@ class Clip:
     orientation: str = ""
     condition: str = ""
     device: str = ""
-    imu: str = ""        # path relative to the manifest directory, or empty
     root: Path = field(default=Path("."), repr=False, compare=False)
 
     @property
     def path(self) -> Path:
         return self.root / self.clip
-
-    @property
-    def imu_path(self) -> Path | None:
-        return self.root / self.imu if self.imu else None
 
     @property
     def group(self) -> str:
@@ -92,8 +88,6 @@ def index_dataset(root: str | Path, out: str | Path) -> list[Clip]:
                 })
                 rec.update({k: v for k, v in row.items() if k in MANIFEST_FIELDS and v != ""})
                 rec["clip"] = _rel(session_dir / row["clip"], out.parent)
-                if row.get("imu"):
-                    rec["imu"] = _rel(session_dir / row["imu"], out.parent)
                 rows.append(rec)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="") as fh:
@@ -284,20 +278,6 @@ def load_basebands(clips: list[Clip], cfg: Config, cache_dir: str | Path = "cach
     return out
 
 
-def load_imu(clips: list[Clip], cfg: Config) -> dict[str, np.ndarray]:
-    """Per-clip IMU resampled to the feature frame rate: ``[6, frames]`` float32."""
-    from .imu import load_clip_imu
-    if not cfg.features.use_imu:
-        return {}
-    clip_s = cfg.data.clip_pre_s + cfg.data.clip_post_s
-    out = {}
-    for c in clips:
-        if c.imu_path is None:
-            raise ValueError(f"features.use_imu is on but clip {c.clip} has no IMU file")
-        out[c.clip] = load_clip_imu(c.imu_path, cfg.features.frame_rate, clip_s)
-    return out
-
-
 # ----------------------------------------------------------------------------
 # Torch dataset
 # ----------------------------------------------------------------------------
@@ -306,10 +286,9 @@ class ClipDataset(Dataset):
     """Yields cropped (and, for training, time-stretched) baseband windows."""
 
     def __init__(self, clips: list[Clip], basebands: dict[str, np.ndarray], cfg: Config, *,
-                 train: bool, shift_s: float = 0.0, imu: dict[str, np.ndarray] | None = None,
-                 seed: int = 0):
+                 train: bool, shift_s: float = 0.0, seed: int = 0):
         self.clips, self.bb, self.cfg, self.train = clips, basebands, cfg, train
-        self.shift_s, self.imu = shift_s, imu or {}
+        self.shift_s = shift_s
         self.index = {name: i for i, name in enumerate(cfg.classes)}
         self.rng = np.random.default_rng(seed)
         r = cfg.features.baseband_rate
@@ -347,24 +326,13 @@ class ClipDataset(Dataset):
         else:
             grid = np.arange(bb.shape[1])
             win = np.stack([np.interp(pos, grid, row.real) + 1j * np.interp(pos, grid, row.imag) for row in bb])
-        win = win.astype(np.complex64)
-        imu = None
-        if self.cfg.features.use_imu:
-            data = self.imu[clip.clip]
-            h = hop(self.cfg.features)
-            t = frames_per_window(self.cfg.features, self.cfg.data.window_s)
-            fpos = pos[::h][:t] / h
-            grid = np.arange(data.shape[1])
-            imu = np.stack([np.interp(fpos, grid, row) for row in data]).astype(np.float32)
-            imu[:3] -= imu[:3].mean(axis=1, keepdims=True)  # remove gravity / orientation offset
-        return win, imu, self.index.get(clip.label, -1)
+        return win.astype(np.complex64), self.index.get(clip.label, -1)
 
 
 def collate(batch):
     bb = torch.from_numpy(np.stack([b[0] for b in batch]))
-    imu = None if batch[0][1] is None else torch.from_numpy(np.stack([b[1] for b in batch]))
-    y = torch.tensor([b[2] for b in batch], dtype=torch.long)
-    return bb, imu, y
+    y = torch.tensor([b[1] for b in batch], dtype=torch.long)
+    return bb, y
 
 
 def clip_table(clips: list[Clip]) -> list[dict]:

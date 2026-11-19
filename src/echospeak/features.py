@@ -4,15 +4,15 @@ Pipeline for one window ``bb[k, n]`` (tone k, baseband sample n):
 
 1. ``rel = bb / mean_n(bb) - 1``: the echo *relative to the static path*. This
    cancels each tone's speaker/microphone gain and arbitrary carrier phase, so the
-   features do not depend on phone volume or hardware frequency response.
+   features do not depend on speaker volume or hardware frequency response.
 2. (train only) physically motivated augmentation of ``rel``: echo gain, global
    phase rotation (unknown mouth distance mod one wavelength), tone dropout,
    noise.
 3. Two views:
    * ``doppler``  ``[B, K, F, T]``  log-power Doppler spectrogram per tone
      (+-``doppler_max_hz``), i.e. radial velocity of articulators over time;
-   * ``iq``       ``[B, 5K(+6), T]`` frame-rate I/Q trajectory, its derivative and
-     log-amplitude change per tone (+ optional IMU channels).
+   * ``iq``       ``[B, 5K, T]`` frame-rate I/Q trajectory, its derivative and
+     log-amplitude change per tone.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def doppler_bins(feat: FeatureConfig) -> int:
 
 
 def iq_channels(n_tones: int, feat: FeatureConfig) -> int:
-    return 5 * n_tones + (6 if feat.use_imu else 0)
+    return 5 * n_tones
 
 
 def relative_echo(bb: torch.Tensor) -> torch.Tensor:
@@ -86,7 +86,6 @@ def rotate_echo(rel: torch.Tensor, aug: AugmentConfig, gen: torch.Generator | No
 def compute_features(
     bb: torch.Tensor,
     feat: FeatureConfig,
-    imu: torch.Tensor | None = None,
     aug: AugmentConfig | None = None,
     gen: torch.Generator | None = None,
 ) -> dict[str, torch.Tensor]:
@@ -130,10 +129,6 @@ def compute_features(
         torch.asinh(d_re / (s / 4)), torch.asinh(d_im / (s / 4)),
         torch.asinh(la / s),
     ], dim=1)
-    if feat.use_imu:
-        if imu is None:
-            raise ValueError("features.use_imu is true but no IMU data was supplied")
-        iq = torch.cat([iq, imu.to(iq)[..., :t_frames]], dim=1)
 
     out = {"doppler": doppler, "iq": iq}
     if aug is not None and aug.enabled and aug.time_masks > 0:

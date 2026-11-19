@@ -1,7 +1,7 @@
 """Milestone 1: verify that the hardware emits/captures the probe and sees motion.
 
-Reports per-tone SNR (tones missing => the device or app filters >16 kHz,
-compresses audio, or the speaker cannot play them), clipping, and the echo-motion
+Reports per-tone SNR (tones missing => the sound card/OS filters >16 kHz,
+or the speaker cannot play them), clipping, and the echo-motion
 energy during "still" vs "moving" phases. Saves a PNG of the motion trace and
 Doppler spectrogram when matplotlib is installed.
 """
@@ -19,8 +19,8 @@ from .config import Config
 from .features import motion_trace
 from .probe import demodulate, probe_signal, tone_snr_db
 
-PHASES = [(0, 4, "hold still (phone/laptop and face)"),
-          (4, 8, "wave a hand slowly 5-15 cm in front of the mic"),
+PHASES = [(0, 4, "hold still"),
+          (4, 8, "wave a hand slowly 5-15 cm in front of the laptop mic"),
           (8, 12, "silently mouth NEXT, BACK, STOP ... repeatedly")]
 
 

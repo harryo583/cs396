@@ -95,7 +95,7 @@ def generate(cfg: Config, out_root: str | Path, participants: int = 6, sessions:
         for s in range(sessions + (1 if probe_off_reps else 0)):
             probe_on = s < sessions
             user = dict(base)
-            user["d0"] = base["d0"] * rng.uniform(0.85, 1.15)  # re-holding the phone
+            user["d0"] = base["d0"] * rng.uniform(0.85, 1.15)  # re-seating the participant
             user["static_phase"] = rng.uniform(0, 2 * np.pi, len(base["response"]))
             sess = f"S{s + 1}" if probe_on else "S-probeoff"
             d = root / f"P{p + 1:02d}" / sess
@@ -111,10 +111,10 @@ def generate(cfg: Config, out_root: str | Path, participants: int = 6, sessions:
                     trial += 1
                     name = f"clips/{trial:04d}_{label}.wav"
                     write_wav(d / name, synth_clip(cfg, label, rng, user, probe_on), cfg.probe.sample_rate)
-                    rows.append({"clip": name, "trial": trial, "label": label, "imu": ""})
+                    rows.append({"clip": name, "trial": trial, "label": label, "probe": meta["probe"]})
                     n += 1
             with (d / "clips.csv").open("w", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=["clip", "trial", "label", "imu"])
+                w = csv.DictWriter(fh, fieldnames=["clip", "trial", "label", "probe"])
                 w.writeheader()
                 w.writerows(rows)
     log(f"wrote {n} synthetic clips under {root}")

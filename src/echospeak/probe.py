@@ -19,8 +19,6 @@ from .config import FeatureConfig, ProbeConfig
 
 BEEP_HZ = 1000.0
 BEEP_S = 0.08
-CHIRP_S = 0.4
-CHIRP_F0, CHIRP_F1 = 800.0, 4000.0
 INTERMEDIATE_RATE = 2000
 
 
@@ -66,20 +64,13 @@ def probe_signal(cfg: ProbeConfig, seconds: float, fade_s: float = 0.05) -> np.n
 
 
 # ----------------------------------------------------------------------------
-# Audible cue sounds (far below the probe band; removed by demodulation)
+# Audible GO beep (far below the probe band; removed by demodulation)
 # ----------------------------------------------------------------------------
 
 def beep(sample_rate: int, amplitude: float = 0.4) -> np.ndarray:
     n = int(BEEP_S * sample_rate)
     t = np.arange(n) / sample_rate
     return (amplitude * np.hanning(n) * np.sin(2 * np.pi * BEEP_HZ * t)).astype(np.float32)
-
-
-def sync_chirp(sample_rate: int, amplitude: float = 0.5) -> np.ndarray:
-    n = int(CHIRP_S * sample_rate)
-    t = np.arange(n) / sample_rate
-    x = signal.chirp(t, CHIRP_F0, CHIRP_S, CHIRP_F1)
-    return (amplitude * signal.windows.tukey(n, 0.2) * x).astype(np.float32)
 
 
 # ----------------------------------------------------------------------------

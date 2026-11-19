@@ -50,7 +50,6 @@ class FeatureConfig:
     doppler_nfft: int = 64     # STFT size on the 500 Hz baseband (7.8 Hz bins)
     doppler_max_hz: float = 80.0
     iq_scale: float = 3e-3     # asinh compression scale for relative I/Q channels
-    use_imu: bool = False      # append 6 IMU channels to the sequence branch
 
 
 @dataclass
@@ -101,7 +100,6 @@ class GateConfig:
     cooldown_s: float = 1.5        # live: dead time after a trigger
     hop_s: float = 0.1             # live: inference period
     target_false_trigger: float = 0.02  # used to recommend a threshold from validation data
-    imu_max_gyro_rms: float = 0.3  # rad/s; trials above are rejected when IMU gating is on
 
 
 @dataclass

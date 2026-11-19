@@ -54,8 +54,6 @@ def run_live(bundle: Bundle, *, threshold: float | None = None, input_device=Non
              channel: int = 0, action: str = "none", gui: bool = True, seconds: float = 0.0) -> None:
     sd = require_sounddevice()
     cfg, gate_cfg = bundle.cfg, bundle.gate
-    if bundle.uses_imu:
-        raise SystemExit("live demo uses acoustic-only models; train one without features.use_imu")
     sr = cfg.probe.sample_rate
     margin = cfg.data.edge_margin_s
     buf_n = int((cfg.data.window_s + 2 * margin) * sr)

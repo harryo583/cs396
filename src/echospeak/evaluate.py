@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import Config, save_config
-from .data import Clip, load_basebands, load_imu, make_folds
+from .data import Clip, load_basebands, make_folds
 from .metrics import format_confusion, recommend_threshold, summarize
 from .train import Bundle, fit_ensemble
 
@@ -19,22 +19,6 @@ from .train import Bundle, fit_ensemble
 def labels_of(clips: list[Clip], classes: list[str]) -> np.ndarray:
     index = {c: i for i, c in enumerate(classes)}
     return np.array([index.get(c.label, -1) for c in clips])
-
-
-def imu_rejections(clips: list[Clip], cfg: Config) -> np.ndarray | None:
-    """Reject clips whose gyroscope RMS inside the evaluation window exceeds the gate."""
-    if not clips or not all(c.imu for c in clips):
-        return None
-    from .imu import load_clip_imu
-    fr = cfg.features.frame_rate
-    a = int(cfg.data.eval_offset_s * fr)
-    b = a + int(cfg.data.window_s * fr)
-    out = []
-    for c in clips:
-        imu = load_clip_imu(c.imu_path, fr, cfg.data.clip_pre_s + cfg.data.clip_post_s)
-        gyro = imu[3:6, a:b]
-        out.append(np.sqrt((gyro ** 2).sum(axis=0).mean()) > cfg.gate.imu_max_gyro_rms)
-    return np.array(out)
 
 
 def _write_predictions(path: Path, clips: list[Clip], probs: np.ndarray, classes: list[str],
@@ -66,7 +50,6 @@ def run_cv(configs: list[Config], clips: list[Clip], protocol: str, out_dir: str
     folds = make_folds(clips, protocol, n_folds, seed=cfg.train.seed)
     log(f"CV protocol={protocol}: {len(folds)} folds over {len(clips)} clips")
     bb = load_basebands(clips, cfg, cache_dir, log=log)
-    imu = load_imu(clips, cfg) if any(c.features.use_imu for c in configs) else None
     y = labels_of(clips, classes)
     oof = np.full((len(clips), len(classes)), np.nan)
     fold_id = np.full(len(clips), -1)
@@ -75,8 +58,8 @@ def run_cv(configs: list[Config], clips: list[Clip], protocol: str, out_dir: str
     for f, (tr, va) in enumerate(folds):
         log(f"\n=== fold {f + 1}/{len(folds)}: train {len(tr)}, validate {len(va)} "
             f"({', '.join(sorted({clips[i].participant if protocol == 'user' else clips[i].group for i in va}))[:120]})")
-        bundle = fit_ensemble(configs, seeds, [clips[i] for i in tr], bb, imu, log=log)
-        probs = bundle.predict_clips([clips[i] for i in va], bb, imu)
+        bundle = fit_ensemble(configs, seeds, [clips[i] for i in tr], bb, log=log)
+        probs = bundle.predict_clips([clips[i] for i in va], bb)
         oof[va] = probs
         fold_id[va] = f
         m = summarize(probs, y[va], classes, n_cmd, cfg.gate.threshold)
@@ -87,7 +70,7 @@ def run_cv(configs: list[Config], clips: list[Clip], protocol: str, out_dir: str
             fold_callback(f, m)
     done = fold_id >= 0
     threshold = recommend_threshold(oof[done], y[done], n_cmd, cfg.gate.target_false_trigger)
-    pooled = summarize(oof[done], y[done], classes, n_cmd, threshold, imu_rejections([clips[i] for i in np.where(done)[0]], cfg))
+    pooled = summarize(oof[done], y[done], classes, n_cmd, threshold)
     summary = {
         "protocol": protocol, "folds": len(folds), "seeds": seeds, "n_clips": len(clips),
         "accuracy_mean": float(np.mean([m["accuracy"] for m in fold_metrics])),
@@ -121,8 +104,7 @@ def _trigger_lines(t: dict) -> str:
     keys = [("command_correct_trigger", "commands correctly triggered"),
             ("command_wrong_trigger", "commands triggering the WRONG action"),
             ("command_missed", "commands rejected (no action)"),
-            ("false_trigger_rate", "non-command trials that triggered (false-trigger rate)"),
-            ("imu_rejected_fraction", "trials rejected by IMU motion gate")]
+            ("false_trigger_rate", "non-command trials that triggered (false-trigger rate)")]
     rows = [f"- {label}: {t[k]:.3f}" for k, label in keys if k in t]
     return f"At threshold {t['threshold']:.2f}:\n" + "\n".join(rows)
 
@@ -142,14 +124,10 @@ def run_test(bundle: Bundle, groups: dict[str, list[Clip]], out_dir: str | Path,
             continue
         t0 = time.time()
         bb = load_basebands(clips, cfg, cache_dir, log=log)
-        imu = load_imu(clips, cfg) if bundle.uses_imu else None
-        probs = bundle.predict_clips(clips, bb, imu)
+        probs = bundle.predict_clips(clips, bb)
         ms = 1000 * (time.time() - t0) / len(clips)
         y = labels_of(clips, classes)
         m = summarize(probs, y, classes, n_cmd, thr)
-        rejected = imu_rejections(clips, cfg)
-        if rejected is not None:
-            m["trigger_with_imu_gate"] = summarize(probs, y, classes, n_cmd, thr, rejected)["trigger"]
         m["breakdown"] = _breakdown(clips, probs, y)
         m["ms_per_clip_including_io"] = ms
         results[name] = m
@@ -164,8 +142,6 @@ def run_test(bundle: Bundle, groups: dict[str, list[Clip]], out_dir: str | Path,
             report += [f"- **accuracy: {m['accuracy']:.3f}**, macro-F1: {m['macro_f1']:.3f}, "
                        f"command-vs-non-command: {m['command_vs_noncommand_accuracy']:.3f}",
                        _trigger_lines(m["trigger"])]
-            if "trigger_with_imu_gate" in m:
-                report += ["", "With IMU motion gating:", _trigger_lines(m["trigger_with_imu_gate"])]
             report += ["", format_confusion(m["confusion"], classes), ""]
             for key, rows in m["breakdown"].items():
                 if len(rows) > 1:

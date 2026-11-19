@@ -72,14 +72,14 @@ def _param_groups(model: nn.Module, weight_decay: float):
     return [{"params": decay, "weight_decay": weight_decay}, {"params": no_decay, "weight_decay": 0.0}]
 
 
-def fit_member(cfg: Config, clips: list[Clip], basebands: dict, imu: dict | None = None, *,
-               log=print, val: tuple[list[Clip], dict, dict | None] | None = None) -> EchoNet:
+def fit_member(cfg: Config, clips: list[Clip], basebands: dict, *,
+               log=print, val: tuple[list[Clip], dict] | None = None) -> EchoNet:
     """Train one model and return its EMA weights (on CPU, eval mode)."""
     tc = cfg.train
     set_seed(tc.seed)
     device = select_device(tc.device)
     torch.set_num_threads(max(1, torch.get_num_threads()))
-    ds = ClipDataset(clips, basebands, cfg, train=True, imu=imu, seed=tc.seed)
+    ds = ClipDataset(clips, basebands, cfg, train=True, seed=tc.seed)
     if any(ds.index.get(c.label, -1) < 0 for c in clips):
         raise ValueError("training clips contain labels outside data.commands + data.non_commands")
     loader = DataLoader(ds, batch_size=tc.batch_size, shuffle=True, collate_fn=collate,
@@ -99,8 +99,8 @@ def fit_member(cfg: Config, clips: list[Clip], basebands: dict, imu: dict | None
     for epoch in range(tc.epochs):
         model.train()
         seen, correct, loss_sum = 0, 0, 0.0
-        for bb, imu_b, y in loader:
-            feats = compute_features(bb, cfg.features, imu_b, aug=cfg.augment, gen=gen)
+        for bb, y in loader:
+            feats = compute_features(bb, cfg.features, aug=cfg.augment, gen=gen)
             d, q, y = feats["doppler"].to(device), feats["iq"].to(device), y.to(device)
             if cfg.augment.enabled and cfg.augment.mixup_alpha > 0:
                 lam = float(np.random.beta(cfg.augment.mixup_alpha, cfg.augment.mixup_alpha))
@@ -137,17 +137,17 @@ def fit_member(cfg: Config, clips: list[Clip], basebands: dict, imu: dict | None
 
 @torch.no_grad()
 def predict_member(model: EchoNet, cfg: Config, clips: list[Clip], basebands: dict,
-                   imu: dict | None = None, tta: bool = True) -> np.ndarray:
+                   tta: bool = True) -> np.ndarray:
     model.eval()
     device = next(model.parameters()).device
     shifts = cfg.train.tta_shifts_s if tta else [0.0]
     total = np.zeros((len(clips), len(cfg.classes)))
     for shift in shifts:
-        ds = ClipDataset(clips, basebands, cfg, train=False, shift_s=shift, imu=imu)
+        ds = ClipDataset(clips, basebands, cfg, train=False, shift_s=shift)
         loader = DataLoader(ds, batch_size=64, shuffle=False, collate_fn=collate)
         out = []
-        for bb, imu_b, _ in loader:
-            feats = compute_features(bb, cfg.features, imu_b)
+        for bb, _ in loader:
+            feats = compute_features(bb, cfg.features)
             out.append(torch.softmax(model(feats["doppler"].to(device), feats["iq"].to(device)), dim=1).cpu())
         total += torch.cat(out).numpy() if out else 0
     return total / len(shifts)
@@ -183,25 +183,19 @@ class Bundle:
     def n_commands(self) -> int:
         return len(self.cfg.data.commands)
 
-    @property
-    def uses_imu(self) -> bool:
-        return any(c.features.use_imu for c, _ in self.members)
-
-    def predict_clips(self, clips: list[Clip], basebands: dict, imu: dict | None = None, tta: bool = True) -> np.ndarray:
-        probs = [predict_member(m, c, clips, basebands, imu if c.features.use_imu else None, tta)
-                 for c, m in self.members]
+    def predict_clips(self, clips: list[Clip], basebands: dict, tta: bool = True) -> np.ndarray:
+        probs = [predict_member(m, c, clips, basebands, tta) for c, m in self.members]
         return np.mean(probs, axis=0)
 
     @torch.no_grad()
-    def predict_windows(self, bb: np.ndarray | torch.Tensor, imu: np.ndarray | None = None) -> np.ndarray:
+    def predict_windows(self, bb: np.ndarray | torch.Tensor) -> np.ndarray:
         """``bb``: complex ``[B,K,N]`` baseband windows of length ``window_s``."""
         bb = torch.as_tensor(bb)
         if bb.dim() == 2:
             bb = bb[None]
-        imu_t = None if imu is None else torch.as_tensor(imu, dtype=torch.float32)
         out = []
         for cfg, model in self.members:
-            feats = compute_features(bb, cfg.features, imu_t if cfg.features.use_imu else None)
+            feats = compute_features(bb, cfg.features)
             out.append(torch.softmax(model(feats["doppler"], feats["iq"]), dim=1).numpy())
         return np.mean(out, axis=0)
 
@@ -239,11 +233,10 @@ def member_configs(configs: list[Config], seeds: int) -> list[Config]:
 
 
 def fit_ensemble(configs: list[Config], seeds: int, clips: list[Clip], basebands: dict,
-                 imu: dict | None = None, *, log=print, val=None) -> Bundle:
+                 *, log=print, val=None) -> Bundle:
     members = []
     plan = member_configs(configs, seeds)
     for i, cfg in enumerate(plan):
         log(f"member {i + 1}/{len(plan)} (seed {cfg.train.seed})")
-        members.append((cfg, fit_member(cfg, clips, basebands, imu if cfg.features.use_imu else None,
-                                        log=log, val=val)))
+        members.append((cfg, fit_member(cfg, clips, basebands, log=log, val=val)))
     return Bundle(members)

@@ -42,54 +42,29 @@ def cmd_devices(args):
     print(list_devices())
 
 
-def cmd_probe(args):
-    from .audio import write_wav
-    from .probe import probe_signal
-    cfg = _cfg(args)
-    x = probe_signal(cfg.probe, args.seconds)
-    if args.int16:
-        from scipy.io import wavfile
-        wavfile.write(args.out, cfg.probe.sample_rate, (x * 32767).astype(np.int16))
-    else:
-        write_wav(args.out, x, cfg.probe.sample_rate)
-    print(f"wrote {args.out}: {args.seconds:.0f}s, tones {cfg.probe.tones_hz} Hz @ {cfg.probe.sample_rate} Hz")
-
-
 def cmd_check(args):
-    from .check import PHASES, analyze, record_check
+    from .check import analyze, record_check
     cfg = _cfg(args)
     out = Path(args.out)
     if args.wav:
-        analyze(cfg, Path(args.wav), out, phases=PHASES if args.phases else None)
+        analyze(cfg, Path(args.wav), out, phases=None)
     else:
         wav = record_check(cfg, out / "check.wav", args.input_device, args.output_device, args.channel)
         analyze(cfg, wav, out)
 
 
-def cmd_session(args):
-    from .session import run_session
-    cfg = _cfg(args)
-    run_session(cfg, args.root, args.participant, args.session, mode=args.mode, reps=args.reps,
-                probe_on=not args.probe_off, distance_cm=args.distance_cm, orientation=args.orientation,
-                condition=args.condition, device_name=args.device_name, input_device=args.input_device,
-                output_device=args.output_device, channel=args.channel, labels=args.labels)
-
-
-def cmd_import(args):
-    from .segment import segment_session
-    cfg = _cfg(args)
-    session_dir = Path(args.session_dir)
-    audio = Path(args.audio) if args.audio else session_dir / "phone.wav"
-    if args.audio and audio.resolve() != (session_dir / "phone.wav").resolve():
-        import shutil
-        shutil.copyfile(audio, session_dir / "phone.wav")
-    segment_session(session_dir, cfg, session_dir / "phone.wav", channel=args.channel,
-                    imu_accel=args.imu_accel, imu_gyro=args.imu_gyro)
+def cmd_collect(args):
+    from .collect import collect
+    collect(_cfg(args), args.data, args.participant, args.session, reps=args.reps,
+            probe_off_reps=args.probe_off_reps, practice=not args.no_practice, distance_cm=args.distance_cm,
+            condition=args.condition, notes=args.notes, input_device=args.input_device,
+            output_device=args.output_device, channel=args.channel, labels=args.labels, confirm=not args.yes)
 
 
 def cmd_segment(args):
     from .segment import segment_session
-    segment_session(Path(args.session_dir), _cfg(args), args.audio, channel=args.channel)
+    rows = segment_session(Path(args.session_dir), _cfg(args))
+    print(f"wrote {len(rows)} clips; run 'echospeak index' to refresh the manifest")
 
 
 def cmd_synth(args):
@@ -135,7 +110,7 @@ def cmd_tune(args):
 
 def cmd_train(args):
     from .config import save_config
-    from .data import load_basebands, load_imu
+    from .data import load_basebands
     from .train import fit_ensemble
     configs = _configs(args)
     dev, tests = _dev_clips(args, configs[0])
@@ -143,8 +118,7 @@ def cmd_train(args):
         dev += [c for name, group in tests.items() if name != "probe_off" for c in group]
         print(f"--include-test: training on {len(dev)} clips (use only for the final demo model)")
     bb = load_basebands(dev, configs[0], args.cache)
-    imu = load_imu(dev, configs[0]) if any(c.features.use_imu for c in configs) else None
-    bundle = fit_ensemble(configs, args.seeds, dev, bb, imu)
+    bundle = fit_ensemble(configs, args.seeds, dev, bb)
     if args.threshold is not None:
         bundle.gate.threshold = args.threshold
     bundle.meta = {"n_train": len(dev), "participants": sorted({c.participant for c in dev}),
@@ -253,43 +227,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("devices", cmd_devices, "list audio devices", config=False)
 
-    sp = add("probe", cmd_probe, "write the probe WAV to play on a phone")
-    sp.add_argument("--out", default="probe.wav")
-    sp.add_argument("--seconds", type=float, default=600)
-    sp.add_argument("--int16", action="store_true", help="16-bit PCM (smaller, most compatible)")
-
     sp = add("check", cmd_check, "milestone 1: verify the probe is captured and motion is visible")
-    sp.add_argument("--wav", help="analyse an existing recording instead of recording (e.g. from the phone)")
-    sp.add_argument("--phases", action="store_true", help="the --wav recording followed the 4s still/hand/mouth script")
+    sp.add_argument("--wav", help="analyse an existing recording (e.g. a clip) instead of recording")
     sp.add_argument("--out", default="reports/check")
     audio_args(sp)
 
-    sp = add("session", cmd_session, "run a guided recording session for one participant")
-    sp.add_argument("--participant", required=True)
-    sp.add_argument("--session", required=True)
-    sp.add_argument("--root", default="data/raw")
-    sp.add_argument("--mode", choices=["duplex", "prompt"], default="duplex",
-                    help="duplex: this computer plays+records; prompt: the phone plays+records")
-    sp.add_argument("--reps", type=int, default=5, help="repetitions of every class (blocks)")
-    sp.add_argument("--probe-off", action="store_true", help="control session without the probe")
-    sp.add_argument("--distance-cm", type=float, default=10)
-    sp.add_argument("--orientation", default="front")
-    sp.add_argument("--condition", default="normal", help="free tag, e.g. normal, far, tilted, walking")
-    sp.add_argument("--device-name", default="")
+    sp = add("collect", cmd_collect, "record one participant session (sound check, prompts, clips, manifest)")
+    sp.add_argument("--participant", help="participant ID (default: ask, suggesting the next free P##)")
+    sp.add_argument("--session", help="session ID (default: next free S#)")
+    sp.add_argument("--data", default="data", help="dataset folder")
+    sp.add_argument("--reps", type=int, default=5, help="blocks; every class appears once per block")
+    sp.add_argument("--probe-off-reps", type=int, default=1, help="probe-off control blocks at the end (0 = none)")
+    sp.add_argument("--no-practice", action="store_true", help="skip the 3-trial practice")
+    sp.add_argument("--distance-cm", type=float, default=10, help="mouth-to-microphone distance")
+    sp.add_argument("--condition", default="normal", help="free tag, e.g. normal, far, noisy, moving")
+    sp.add_argument("--notes", default="")
     sp.add_argument("--labels", nargs="+", help="subset of classes to prompt")
+    sp.add_argument("--yes", action="store_true", help="no operator prompts (accept suggested IDs, ignore sound-check warnings)")
     audio_args(sp)
 
-    sp = add("import", cmd_import, "segment a phone recording of a prompt-mode session")
+    sp = add("segment", cmd_segment, "re-cut the clips of a recorded session (e.g. after changing clip timing)")
     sp.add_argument("session_dir")
-    sp.add_argument("--audio", help="phone WAV (default: <session_dir>/phone.wav)")
-    sp.add_argument("--channel", type=int, default=0)
-    sp.add_argument("--imu-accel", help="accelerometer CSV (or a 7-column t,ax,ay,az,gx,gy,gz CSV)")
-    sp.add_argument("--imu-gyro", help="gyroscope CSV")
-
-    sp = add("segment", cmd_segment, "re-cut clips of a recorded session (e.g. after changing clip timing)")
-    sp.add_argument("session_dir")
-    sp.add_argument("--audio")
-    sp.add_argument("--channel", type=int, default=0)
 
     sp = add("synth", cmd_synth, "generate a synthetic dataset to test the pipeline")
     sp.add_argument("--out", default="data/synth")
