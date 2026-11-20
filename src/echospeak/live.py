@@ -22,7 +22,7 @@ from .features import motion_trace
 from .probe import demodulate, probe_block
 from .train import Bundle
 
-MAC_KEYS = {"NEXT": 124, "BACK": 123, "SELECT": 36, "CANCEL": 53}  # right, left, return, escape
+MAC_KEYS = {"NEXT": 124, "GO": 124, "BACK": 123, "OKAY": 36, "STOP": 53}  # right, right, left, return, escape
 
 
 def send_action(label: str, action: str) -> None:

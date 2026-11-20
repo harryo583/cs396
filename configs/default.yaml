@@ -12,12 +12,14 @@ probe:
   amplitude: 0.6
 data:
   commands:
-  - NEXT
   - BACK
-  - SELECT
-  - CANCEL
-  - START
+  - MENU
+  - BANANA
+  - GO
+  - OKAY
   - STOP
+  - NEXT
+  - APPLE
   non_commands:
   - REST
   - CHEWING
@@ -35,7 +37,6 @@ features:
   doppler_nfft: 64
   doppler_max_hz: 80.0
   iq_scale: 0.003
-  use_imu: false
 model:
   branches: both
   temporal: transformer
@@ -77,4 +78,3 @@ gate:
   cooldown_s: 1.5
   hop_s: 0.1
   target_false_trigger: 0.02
-  imu_max_gyro_rms: 0.3

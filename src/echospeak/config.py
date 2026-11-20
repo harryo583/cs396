@@ -15,7 +15,9 @@ from typing import Any
 
 import yaml
 
-COMMANDS = ["NEXT", "BACK", "SELECT", "CANCEL", "START", "STOP"]
+# Chosen to differ visibly in syllable count, lip closure (b/p/m), rounding (o/u) and jaw opening.
+# Train on any subset with  --set "data.commands=[...]"; extra recorded words are simply ignored.
+COMMANDS = ["BACK", "MENU", "BANANA", "GO", "OKAY", "STOP", "NEXT", "APPLE"]
 NON_COMMANDS = ["REST", "CHEWING", "YAWNING", "TALKING"]
 
 

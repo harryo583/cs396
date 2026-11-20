@@ -1,9 +1,10 @@
 """Cut a continuous session recording into per-trial clips.
 
-``collect.py`` records the whole session as one WAV and logs, for every trial, the
-sample at which GO was shown. A short 1 kHz beep is played at exactly that sample,
-so the microphone records it too. Each cue is refined by locating its beep, and a
-robust linear fit over all beeps absorbs the fixed speaker-to-microphone latency.
+``collect.py`` records the whole session as one WAV and logs, for every clip, its
+cue sample. Paced repetitions have a 1 kHz beep at exactly that sample, which the
+microphone records too (``beep=1`` in ``cues.csv``). The beeps are located, and a
+robust linear fit over them absorbs the fixed speaker-to-microphone latency; the
+same correction is applied to every cue, including continuous takes (``beep=0``).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from .audio import read_wav, write_wav
 from .config import Config
 from .probe import BEEP_HZ, BEEP_S
 
-CLIP_FIELDS = ["clip", "trial", "label", "probe"]
+CLIP_FIELDS = ["clip", "trial", "label", "probe", "take"]
 
 
 def _envelope(x: np.ndarray, sr: int, lo: float, hi: float) -> np.ndarray:
@@ -57,16 +58,19 @@ def segment_session(session_dir: str | Path, cfg: Config, *, log=print) -> list[
         return []
 
     predicted = np.array([float(c["go_sample"]) for c in cues])
-    found = [find_beep(audio, sr, int(p), int(0.25 * sr)) for p in predicted]
+    has_beep = np.array([c.get("beep", "1") != "0" for c in cues])
+    found = [find_beep(audio, sr, int(p), int(0.25 * sr)) if b else (int(p), 0.0)
+             for p, b in zip(predicted, has_beep)]
     detected = np.array([f[0] for f in found], float)
-    good = np.array([f[1] for f in found]) > 4
+    good = (np.array([f[1] for f in found]) > 4) & has_beep
     resid = detected - predicted
     if good.sum() >= 3:
         med = np.median(resid[good])
         inl = good & (np.abs(resid - med) < 0.02 * sr)
         slope, icpt = np.polyfit(predicted[inl], resid[inl], 1) if inl.sum() >= 3 else (0.0, med)
         go = predicted + icpt + slope * predicted
-        log(f"beep alignment: {int(good.sum())}/{len(cues)} beeps heard, audio latency {icpt / sr * 1000:.0f} ms")
+        log(f"beep alignment: {int(good.sum())}/{int(has_beep.sum())} beeps heard, "
+            f"audio latency {icpt / sr * 1000:.0f} ms")
     else:
         log("WARNING: GO beeps not heard by the microphone; using the logged cue times "
             "(clips may be offset by the audio latency, typically < 0.1 s)")
@@ -84,7 +88,8 @@ def segment_session(session_dir: str | Path, cfg: Config, *, log=print) -> list[
             continue
         name = f"clips/{int(cue['trial']):04d}_{cue['label']}.wav"
         write_wav(session_dir / name, audio[a:b], sr, pcm16=True)
-        rows.append({"clip": name, "trial": cue["trial"], "label": cue["label"], "probe": cue.get("probe", "on")})
+        rows.append({"clip": name, "trial": cue["trial"], "label": cue["label"], "probe": cue.get("probe", "on"),
+                     "take": cue.get("take", "")})
     with (session_dir / "clips.csv").open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CLIP_FIELDS)
         w.writeheader()

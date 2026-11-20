@@ -13,8 +13,9 @@ dependencies = ["torch>=2.2", "numpy>=1.24", "scipy>=1.10", "PyYAML>=6"]
 [project.optional-dependencies]
 audio = ["sounddevice>=0.4.6", "matplotlib>=3.7"]
 tune = ["optuna>=3.5"]
+analysis = ["scikit-learn>=1.3", "jupyter>=1.0", "matplotlib>=3.7"]
 dev = ["pytest>=7"]
-all = ["sounddevice>=0.4.6", "matplotlib>=3.7", "optuna>=3.5", "pytest>=7"]
+all = ["sounddevice>=0.4.6", "matplotlib>=3.7", "optuna>=3.5", "pytest>=7", "scikit-learn>=1.3", "jupyter>=1.0"]
 
 [project.scripts]
 echospeak = "echospeak.cli:main"

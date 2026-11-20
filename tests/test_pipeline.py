@@ -22,7 +22,7 @@ def test_models_forward_backward(temporal, branches):
     d = torch.randn(3, 8, 21, 200)
     q = torch.randn(3, 40, 200)
     out = model(d, q)
-    assert out.shape == (3, 10)
+    assert out.shape == (3, len(cfg.classes))
     out.sum().backward()
 
 
@@ -50,6 +50,24 @@ def test_folds_do_not_leak(protocol):
         if protocol == "session":
             assert not {clips[i].group for i in train} & {clips[i].group for i in val}
     assert seen == set(range(len(clips)))
+
+
+def test_takes_never_straddle_folds_or_splits():
+    clips = []
+    for p in ["P1", "P2", "P3"]:
+        for s in ["S1", "S2"]:
+            for lab in ["NEXT", "REST"]:
+                for t in range(2):
+                    for r in range(5):
+                        clips.append(Clip(f"{p}/{s}/{lab}{t}_{r}.wav", p, s, str(r), lab, take=f"t{lab}{t}"))
+    for train, val in make_folds(clips, "trial", n_folds=4):
+        assert not {clips[i].take_key for i in train} & {clips[i].take_key for i in val}
+    split = make_split(clips, known_fraction=0.15)
+    held = set(split["test_known"])
+    for c in clips:
+        same_take = [d.clip in held for d in clips if d.take_key == c.take_key]
+        assert all(same_take) or not any(same_take)
+    assert len(held) == 3 * 2 * 5          # 1 of 4 takes per (participant, label)
 
 
 def test_split_is_disjoint_and_excludes_probe_off():

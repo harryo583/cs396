@@ -18,9 +18,13 @@ mls/
 
 # Recordings, derived data and experiment outputs (large and/or participant data)
 data/
+data_collection_portable/recordings/
+data_collection_portable/laptop_profile.json
+*.zip
 cache/
 runs/
 reports/
+analysis/.cache/
 *.wav
 *.m4a
 *.mp3

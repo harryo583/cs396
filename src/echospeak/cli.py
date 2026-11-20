@@ -54,11 +54,21 @@ def cmd_check(args):
 
 
 def cmd_collect(args):
-    from .collect import collect
+    from .collect import collect, parse_class_reps
     collect(_cfg(args), args.data, args.participant, args.session, reps=args.reps,
+            class_reps=parse_class_reps(args.class_reps), group_size=args.group_size, interval_s=args.interval,
             probe_off_reps=args.probe_off_reps, practice=not args.no_practice, distance_cm=args.distance_cm,
             condition=args.condition, notes=args.notes, input_device=args.input_device,
             output_device=args.output_device, channel=args.channel, labels=args.labels, confirm=not args.yes)
+
+
+def cmd_merge(args):
+    from .collect import merge_sessions
+    from .data import read_manifest, summarize
+    cfg = _cfg(args)
+    for src in args.src:
+        merge_sessions(src, cfg, args.data)
+    print(summarize(read_manifest(Path(args.data) / "manifest.csv")))
 
 
 def cmd_segment(args):
@@ -236,15 +246,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--participant", help="participant ID (default: ask, suggesting the next free P##)")
     sp.add_argument("--session", help="session ID (default: next free S#)")
     sp.add_argument("--data", default="data", help="dataset folder")
-    sp.add_argument("--reps", type=int, default=5, help="blocks; every class appears once per block")
-    sp.add_argument("--probe-off-reps", type=int, default=1, help="probe-off control blocks at the end (0 = none)")
-    sp.add_argument("--no-practice", action="store_true", help="skip the 3-trial practice")
+    sp.add_argument("--reps", type=int, default=10, help="repetitions (clips) of every word/action in this run")
+    sp.add_argument("--class-reps", nargs="+", metavar="LABEL=N",
+                    help="per-class repetitions overriding --reps, e.g. NEXT=15 YAWNING=5 TALKING=0")
+    sp.add_argument("--group-size", type=int, default=5,
+                    help="repetitions recorded back-to-back after one SPACE press (takes are spread over the session)")
+    sp.add_argument("--interval", type=float, default=3.0, help="seconds between beeps within a take (YAWNING: 6 s)")
+    sp.add_argument("--probe-off-reps", type=int, default=1, help="probe-off control clips per class at the end (0 = none)")
+    sp.add_argument("--no-practice", action="store_true", help="skip the short practice")
     sp.add_argument("--distance-cm", type=float, default=10, help="mouth-to-microphone distance")
     sp.add_argument("--condition", default="normal", help="free tag, e.g. normal, far, noisy, moving")
     sp.add_argument("--notes", default="")
     sp.add_argument("--labels", nargs="+", help="subset of classes to prompt")
     sp.add_argument("--yes", action="store_true", help="no operator prompts (accept suggested IDs, ignore sound-check warnings)")
     audio_args(sp)
+
+    sp = add("merge", cmd_merge, "import sessions recorded with data_collection_portable (folders or .zip files)")
+    sp.add_argument("src", nargs="+", help="recordings folder(s) or .zip file(s)")
+    sp.add_argument("--data", default="data", help="dataset folder to merge into")
 
     sp = add("segment", cmd_segment, "re-cut the clips of a recorded session (e.g. after changing clip timing)")
     sp.add_argument("session_dir")
@@ -272,14 +291,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("cv", cmd_cv, "cross-validate config(s) on the development set", multi=True)
     data_args(sp)
-    sp.add_argument("--protocol", choices=["trial", "session", "user"], default="user")
+    sp.add_argument("--protocol", choices=["trial", "session", "user", "device"], default="user")
     sp.add_argument("--folds", type=int, default=5, help="folds for trial/user protocols (0 = leave-one-user-out)")
     sp.add_argument("--seeds", type=int, default=1)
     sp.add_argument("--out", required=True)
 
     sp = add("tune", cmd_tune, "Optuna hyperparameter search (CV on the development set)")
     data_args(sp)
-    sp.add_argument("--protocol", choices=["trial", "session", "user"], default="user")
+    sp.add_argument("--protocol", choices=["trial", "session", "user", "device"], default="user")
     sp.add_argument("--folds", type=int, default=5)
     sp.add_argument("--trials", type=int, default=40)
     sp.add_argument("--metric", choices=["accuracy", "macro_f1"], default="accuracy")

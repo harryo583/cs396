@@ -36,7 +36,7 @@ from .probe import demodulate
 
 MANIFEST_FIELDS = [
     "clip", "participant", "session", "trial", "label", "probe", "distance_cm",
-    "orientation", "condition", "device",
+    "orientation", "condition", "device", "take",
 ]
 
 
@@ -52,6 +52,7 @@ class Clip:
     orientation: str = ""
     condition: str = ""
     device: str = ""
+    take: str = ""       # recording take (group of back-to-back repetitions) within the session
     root: Path = field(default=Path("."), repr=False, compare=False)
 
     @property
@@ -61,6 +62,11 @@ class Clip:
     @property
     def group(self) -> str:
         return f"{self.participant}/{self.session}"
+
+    @property
+    def take_key(self) -> str:
+        """Clips of one take are near-duplicates and must stay on the same side of any split."""
+        return f"{self.participant}/{self.session}/{self.take}" if self.take else self.clip
 
 
 # ----------------------------------------------------------------------------
@@ -152,16 +158,21 @@ def make_split(clips: list[Clip], *, holdout_participants: list[str] | None = No
     conditions = set(holdout_conditions or [])
     test_condition = sorted(c.clip for c in clips if c.participant not in test_users
                             and c.condition in conditions and c.probe == "on")
-    pool = defaultdict(list)
+    # Whole takes are held out, so near-duplicate repetitions never straddle train/test.
+    pool = defaultdict(lambda: defaultdict(list))
     for c in clips:
         if c.participant in test_users or c.probe != "on" or c.clip in test_condition:
             continue
-        pool[(c.participant, c.label)].append(c.clip)
+        pool[(c.participant, c.label)][c.take_key].append(c.clip)
     test_known = []
     for key in sorted(pool):
-        items = sorted(pool[key])
-        rng.shuffle(items)
-        test_known += items[: int(round(known_fraction * len(items)))]
+        takes = sorted(pool[key])
+        rng.shuffle(takes)
+        n = int(round(known_fraction * len(takes)))
+        if n == 0 and known_fraction > 0 and len(takes) >= 3:
+            n = 1  # e.g. 2 sessions x 2 takes per word -> hold out 1 take (25%)
+        for t in takes[:n]:
+            test_known += pool[key][t]
     return {"seed": seed, "test_users": test_users, "test_known": sorted(test_known),
             "test_condition": test_condition, "holdout_conditions": sorted(conditions)}
 
@@ -196,21 +207,24 @@ def load_split(path: str | Path | None) -> dict | None:
 
 def make_folds(clips: list[Clip], protocol: str, n_folds: int = 5, seed: int = 0) -> list[tuple[list[int], list[int]]]:
     """Protocols: ``trial`` (known users, held-out trials), ``session`` (held-out
-    recording session per participant), ``user`` (held-out participants)."""
+    recording session per participant), ``user`` (held-out participants),
+    ``device`` (held-out laptop models: train on some laptops, test on another)."""
     rng = random.Random(seed)
     n = len(clips)
     fold_of = [0] * n
     if protocol == "trial":
-        by_key = defaultdict(list)
+        # Stratified by (participant, label); whole takes are assigned to a fold.
+        by_key = defaultdict(lambda: defaultdict(list))
         for i, c in enumerate(clips):
-            by_key[(c.participant, c.label)].append(i)
+            by_key[(c.participant, c.label)][c.take_key].append(i)
         offset = 0
         for key in sorted(by_key):
-            idx = by_key[key]
-            rng.shuffle(idx)
-            for j, i in enumerate(idx):
-                fold_of[i] = (offset + j) % n_folds
-            offset += len(idx)
+            takes = sorted(by_key[key])
+            rng.shuffle(takes)
+            for j, t in enumerate(takes):
+                for i in by_key[key][t]:
+                    fold_of[i] = (offset + j) % n_folds
+            offset += len(takes)
     elif protocol == "session":
         sessions = defaultdict(set)
         for c in clips:
@@ -225,16 +239,17 @@ def make_folds(clips: list[Clip], protocol: str, n_folds: int = 5, seed: int = 0
                 rank[(user, sess)] = (start + j) % len(ordered)
         n_folds = max(len(s) for s in sessions.values())
         fold_of = [rank[(c.participant, c.session)] for c in clips]
-    elif protocol == "user":
-        users = sorted({c.participant for c in clips})
-        if len(users) < 2:
-            raise ValueError("user protocol needs >= 2 participants")
-        rng.shuffle(users)
-        n_folds = min(n_folds, len(users)) if n_folds > 0 else len(users)
-        user_fold = {u: j % n_folds for j, u in enumerate(users)}
-        fold_of = [user_fold[c.participant] for c in clips]
+    elif protocol in ("user", "device"):
+        key = (lambda c: c.participant) if protocol == "user" else (lambda c: c.device or "unknown")
+        groups = sorted({key(c) for c in clips})
+        if len(groups) < 2:
+            raise ValueError(f"{protocol} protocol needs >= 2 different {protocol}s")
+        rng.shuffle(groups)
+        n_folds = min(n_folds, len(groups)) if (n_folds > 0 and protocol == "user") else len(groups)
+        group_fold = {g: j % n_folds for j, g in enumerate(groups)}
+        fold_of = [group_fold[key(c)] for c in clips]
     else:
-        raise ValueError("protocol must be trial | session | user")
+        raise ValueError("protocol must be trial | session | user | device")
     folds = []
     for f in range(n_folds):
         val = [i for i in range(n) if fold_of[i] == f]

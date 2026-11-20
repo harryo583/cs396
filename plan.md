@@ -8,9 +8,10 @@ how the implementation works, how to record data, and the exact commands for
 training, tuning, evaluating and demoing.
 
 **Change from the proposal:** everything runs on a **laptop's built-in speaker and
-microphone**, so no phone, extra hardware or app is needed. The sensing
-principle, classes and evaluation are unchanged. The phone IMU extension is
-dropped, because a laptop has no motion sensor in the user's hand.
+microphone**, so no phone, extra hardware or app is needed. Data can be collected
+on several laptops with a standalone collector (§5.3). The sensing principle,
+classes and evaluation are unchanged. The phone IMU extension is dropped, because
+a laptop has no motion sensor in the user's hand.
 
 ---
 
@@ -28,14 +29,27 @@ of the task is *rejecting* unrelated everyday mouth movements.
 
 | | Classes |
 |---|---|
-| Commands (6) | `NEXT`, `BACK`, `SELECT`, `CANCEL`, `START`, `STOP` |
+| Commands (8 recorded) | `BACK`, `MENU`, `BANANA`, `GO`, `OKAY`, `STOP`, `NEXT`, `APPLE` |
 | Non-commands (4) | `REST`, `CHEWING`, `YAWNING`, `TALKING` |
 
 The model outputs a class and a confidence. **Low-confidence predictions and
-non-command predictions never trigger an action.** If reliability is limited,
-start with four commands and expand to six (see §9).
+non-command predictions never trigger an action.**
 
-**Primary metric:** test accuracy (10-class), reported for three settings:
+**Vocabulary (changed from the proposal's NEXT/BACK/SELECT/CANCEL/START/STOP).**
+Echo sensing sees the lips and jaw, not the tongue or voice. The words were
+chosen to differ in what is *visible*:
+* the number of syllables (GO/BACK/STOP/NEXT = 1; MENU/OKAY/APPLE = 2; BANANA = 3);
+* lip closure on b, p and m (BACK, MENU, BANANA, STOP, APPLE);
+* lip rounding (GO, OKAY, MENU) versus spread lips (NEXT);
+* jaw opening (BACK, APPLE, BANANA open wide; GO, MENU much less).
+
+The proposal's pairs NEXT/SELECT (mostly tongue movement) and START/STOP (the
+same "st" + open vowel) were the most likely to be confused. All 8 words are
+recorded so that the final command set can be chosen from data: train on any
+subset with `--set "data.commands=[...]"` (§9), and clips of the other words are
+simply ignored.
+
+**Primary metric:** test accuracy (all classes used), reported for three settings:
 1. known users, held-out trials;
 2. new session or altered seating/placement;
 3. unseen participants.
@@ -103,7 +117,7 @@ iq      [40,200]   ─ BN ─ 1D residual CNN ───────────�
 `model.branches` (`both` / `doppler` / `iq`) gives the feature ablation.
 
 The default is a CNN-Transformer with both branches, at about 0.5 M parameters.
-That size is deliberate: with roughly 1,000 labelled trials, a large network
+That size is deliberate: with a few thousand labelled clips, a large network
 would only memorise the data. The default is a starting point; tuning (§6)
 decides on real data.
 
@@ -149,7 +163,7 @@ on Apple Silicon (MPS, used automatically), CUDA or CPU.
 cd cs396
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[all]'      # torch, numpy, scipy, pyyaml, sounddevice, matplotlib, optuna, pytest
-pytest -q                    # 26 tests, ~15 s, no hardware needed
+pytest -q                    # 28 tests, ~15 s, no hardware needed
 echospeak --help
 ```
 
@@ -195,104 +209,185 @@ or beside the keyboard.
 
 ## 5. Data collection
 
-### 5.1 One command per session
+Two folders, both of which record on a laptop's built-in speaker and mic:
 
-All collection runs through **one script**. It handles the sound check,
-prompting the participant, recording, cutting clips and updating the dataset:
+| Folder | Use it for | Output |
+|---|---|---|
+| [`data_collection/`](data_collection/README.md) | the **main laptop**, which is also used for training and the demo | straight into `data/`; the manifest updates itself |
+| [`data_collection_portable/`](data_collection_portable/README.md) | **any other laptop** (macOS/Windows/Linux). Standalone: needs only numpy, scipy and sounddevice | `recordings/` plus a zip, merged with `echospeak merge` |
+
+Both show the participant the same screens and use the same protocol and file
+format. **One run = one participant session.**
+
+### 5.1 What one run does (about 10 minutes with the defaults)
 
 ```bash
-python collect.py                          # asks for the participant ID, suggesting the next free one (P01, P02, ...)
-python collect.py --participant P03        # P03's next session (S1, S2, ...) is chosen automatically
+python data_collection/collect.py                      # main laptop: asks for the participant ID (suggests P01, P02, ...)
+python data_collection_portable/collect.py             # other laptops: suggests <TAG>-P01, ... (TAG = collector initials)
 ```
 
-What happens in one run (about 6 minutes):
+Recording is **self-paced and grouped**. Nothing is recorded while the
+participant reads and gets ready. One SPACE press records a **take**: 5
+repetitions of one word back to back.
 
 | Step | Who | What |
 |---|---|---|
-| 1. Setup | operator | Confirm the participant ID. The script prints the plan, the estimated time and the data folder |
-| 2. Sound check (3 s) | operator | Checks that all probe tones are captured, nothing clips, and the mic hears the GO beep. If something is wrong, it explains the fix and offers retry / continue / quit, *before* the participant starts |
+| 1. Setup | operator | Confirm the participant ID. The script prints the clip count per word/action, the number of takes, the estimated time and the data folder |
+| 2. Sound check (3 s) | operator | Checks that all probe tones are captured, nothing clips, and the mic hears the beep. If something is wrong, it explains the fix and offers retry / continue / quit, *before* the participant starts |
 | 3. Instructions | participant | One screen explaining the task. Press SPACE |
-| 4. Practice | participant | 3 trials (NEXT, CHEWING, TALKING), not saved |
-| 5. Main part | participant | 5 blocks; every class appears once per block, in random order. A progress bar shows how much time is left. Breaks between blocks continue automatically after 10 s, or press SPACE |
-| 6. Last part (~1 min) | participant | One more block with the probe silently switched off: the probe-off control |
-| 7. Saving | automatic | Saves the recording, cuts one clip per trial, rebuilds `data/manifest.csv`, and adds a row to `data/sessions.csv` |
+| 4. Practice | participant | NEXT × 3 and CHEWING for 6 s, not saved |
+| 5. Main part | participant | One take per screen. The progress bar shows clips done and time left. There are no timers between takes: the participant rests as long as they like and presses SPACE when ready |
+| 6. Last part (~1.5 min) | participant | One short take per class with the probe silently switched off: the probe-off control |
+| 7. Saving | automatic | Saves the full recording and cuts one clip per repetition. Main laptop: also rebuilds `data/manifest.csv` and logs the run in `data/sessions.csv`. Portable: logs in `recordings/sessions.csv` |
 
-**Each trial:**
-1. The word appears ("Get ready: NEXT") for 1.2 s.
-2. **GO** appears with a beep, and the participant does the action once.
-3. "relax".
+**Each take:**
+1. The screen shows, e.g., **`NEXT  x 5`** with the instruction. The participant
+   gets ready and presses SPACE.
+2. A countdown: **3 – 2 – 1**.
+3. The repetitions themselves, which depend on the class:
+   * **Words:** a beep every 3 s (`--interval`). The participant silently mouths
+     the word once per beep and closes the mouth in between. The screen shows
+     "2 of 5". Each beep becomes one clip, from beep −0.75 s to +2.25 s, so the
+     clips are back to back and don't overlap.
+   * **YAWNING:** the same, but every 6 s, since a yawn takes longer.
+   * **REST, CHEWING, TALKING:** continuous. A beep starts it, and the
+     participant keeps resting, chewing or talking for 15 s until the second
+     beep. The stretch is cut into 5 consecutive 3 s clips.
+4. Back to step 1 for the next take.
 
-The saved clip runs from GO −0.75 s to GO +2.25 s. The GO beep is also recorded
-by the microphone, which makes the clip timing exact.
+**Spread over the session:** each class's 10 repetitions are split into 2 takes
+of 5, and the takes are spread out. Round 1 has the first take of every class in
+random order, round 2 the second, and the same class never appears twice in a
+row. This way slow drift during the session (posture, distance) is not
+confounded with the word.
 
-**Keys during the session** (participant or operator):
+**Takes stay together in evaluation:** the 5 clips of one take are
+near-duplicates. Every clip records its take, and CV folds and the known-user
+test split always keep a whole take on one side (§5.6, §6.1). Otherwise
+"held-out" clips would be almost copies of training clips, and accuracy would
+look better than it really is.
+
+**Keys** (participant or operator):
 
 | Key | Effect |
 |---|---|
-| `SPACE` | continue |
-| `x` | redo the last trial (it is discarded and repeated later in the block) |
-| `p` | pause / resume |
+| `SPACE` | start the take |
+| `x` | during a take: redo it right away. On the get-ready screen: redo the *previous* take |
 | `q` | stop early; everything recorded so far is still saved and cut |
 
-**Useful options** (`python collect.py --help` lists all):
+### 5.2 Choosing how many clips per run
+
+The run prints the exact count before it starts.
+
+| Goal | Option | Default |
+|---|---|---|
+| Repetitions of every word/action | `--reps N` | 10 |
+| Different numbers per class | `--class-reps NEXT=15 YAWNING=5 TALKING=0`. Unlisted classes use `--reps`; 0 skips a class | none |
+| Repetitions per SPACE press | `--group-size N`. Reps are split into takes of this size; e.g. 10 reps with group 5 = 2 takes per class | 5 |
+| Beep spacing | `--interval S` (YAWNING always 6 s) | 3.0 s |
+| Probe-off control | `--probe-off-reps N` clips per class (0 = none) | 1 |
+| Permanent defaults (portable) | edit `REPS`, `CLASS_REPS`, `GROUP_SIZE`, `INTERVAL_S`, `PROBE_OFF_REPS` under SETTINGS at the top of `data_collection_portable/collect.py` | |
+
+With the defaults, a run records:
+* **120 clips** (12 classes × 10) in 24 takes;
+* plus **12 probe-off clips**.
+
+It takes about 10 minutes. Each take of 5 words takes about 20 s, including the
+time to get ready.
+
+**Other options:**
 
 | Option | Meaning |
 |---|---|
-| `--reps 5` | number of blocks |
-| `--probe-off-reps 1` | number of probe-off blocks (0 = none) |
 | `--no-practice` | skip the practice, e.g. for a participant's second session |
 | `--distance-cm 10` | mouth-to-microphone distance, recorded in the metadata |
-| `--condition normal` | free tag, e.g. `far`, `noisy`, `moving` |
+| `--condition normal` | free tag, e.g. `far`, `noisy` |
 | `--notes "..."` | free text saved with the session |
-| `--yes` | skip operator questions |
+| `--participant` / `--session` | set the IDs explicitly |
 
-### 5.2 What to collect
+`--help` on either script lists everything.
+
+### 5.3 Recording on other laptops (portable)
+
+1. **Copy the folder** `data_collection_portable/` to the laptop, `cd` into it,
+   and run `pip install -r requirements.txt`. No training code or torch is
+   needed. The commands below run inside that folder.
+2. **Set up the laptop once:** `python collect.py --setup`.
+   * Pick the audio devices, and set a collector tag (e.g. `JX`).
+   * Run the sound check.
+   * Run a **placement test**: 4 s still, then 4 s silent mouthing. It reports
+     the motion ratio; aim for ≥ 3×, and move closer to the mic if it is lower.
+   * Write a one-line seating description, shown before every run.
+
+   The result is saved in `laptop_profile.json`.
+3. **Record:** `python collect.py`, once per participant.
+   * Participant IDs are prefixed with the tag (`JX-P01`), so different laptops
+     never collide.
+   * The laptop model is saved with every session.
+4. **Send the data:** `python collect.py --pack` writes
+   `echospeak_<TAG>_<date>.zip`. It contains the full recordings and logs;
+   clips are omitted to keep it small.
+5. **On the main machine:** `echospeak merge echospeak_JX_*.zip`.
+   * It copies each session into `data/raw/` and re-cuts the clips with the
+     repository's config, so timing is always consistent.
+   * It logs the sessions and rebuilds the manifest.
+   * Already-merged sessions are skipped, and recordings made with different
+     probe tones are rejected.
+
+Data from different laptop models is **not interchangeable**: speaker and mic
+placement change the echoes. The laptop model is stored in the manifest's
+`device` column. Use `echospeak cv --protocol device` to measure how well a model
+transfers to a laptop it has never seen (§6.1). The test report also breaks
+accuracy down by device. Ideally use **one laptop model** for everything; if not,
+spread each laptop over several participants, so laptop and person are not
+confounded.
+
+### 5.4 What to collect
 
 | Item | Plan |
 |---|---|
 | Participants | ≥ 10 (the proposal's target). More participants help unseen-user accuracy more than more repetitions do |
-| Sessions | 2 per participant, on different days or after re-seating (`python collect.py --participant P01` again creates S2) |
-| Repetitions | 5 per class per session (default). 10 classes × 5 × 2 sessions × 10 people = **1,000 trials** |
-| Placement | sit facing the laptop, mouth ~10 cm (a hand's width) from the microphone, head still between prompts |
-| Robustness (optional) | for some participants, an extra session with `--condition far --distance-cm 20` and/or `--condition noisy` (a noisy room) |
-| Probe-off control | automatic: the last block of every session |
+| Sessions | 2 per participant, on different days or after re-seating. Running the script again for the same participant creates S2 |
+| Repetitions | 10 per class per session (default), in takes of 5. 12 classes × 10 × 2 sessions × 10 people = **2,400 clips** (200 per class) |
+| Placement | facing the laptop, mouth ~10 cm (a hand's width) from the microphone, head still between prompts. Same chair and laptop position for everyone |
+| Robustness (optional) | for some participants, an extra session with `--condition far --distance-cm 20` and/or `--condition noisy` |
+| Probe-off control | automatic: the last round of every run |
 
 **Instructions shown to participants:**
 
 | Class | Instruction |
 |---|---|
-| commands | silently mouth the word: lips and jaw move, but there is **no sound and no whisper** |
-| `REST` | stay still and relaxed, mouth closed |
-| `CHEWING` | chew naturally, as if chewing gum |
-| `YAWNING` | yawn, or imitate a yawn |
-| `TALKING` | say a short sentence out loud (anything) |
+| words | silently mouth the word once at each beep: lips and jaw move, but there is **no sound and no whisper**; close the mouth between beeps |
+| `REST` | stay still and relaxed, mouth closed, between the two beeps (15 s) |
+| `CHEWING` | chew continuously, as if chewing gum, between the two beeps |
+| `YAWNING` | yawn (or imitate a yawn) once at each beep (every 6 s) |
+| `TALKING` | talk out loud continuously (anything) between the two beeps |
 
 **Tips for low hassle:**
-* Use a quiet room, the same chair and the same laptop position for everyone.
-* The operator sits next to the participant and can press `x` when a trial
-  goes wrong.
-* For a second session the practice can be skipped (`--no-practice`).
+* Use a quiet room, and keep the operator next to the participant (they can
+  press `x`).
+* Let participants rest on any get-ready screen; nothing is recorded there.
+* Skip the practice for second sessions.
+* Participant IDs are anonymous. All recordings stay in `data/` (and
+  `recordings/` on other laptops), both of which are git-ignored.
 
-Participant IDs are anonymous (`P01`, …). All recordings stay in `data/`, which
-is git-ignored.
-
-### 5.3 Data folder
+### 5.5 Data folder
 
 ```
 data/
-  manifest.csv          every clip (participant, session, label, probe on/off, distance, condition); rebuilt after each session
-  sessions.csv          one row per session: date, clip counts, sound-check SNR, notes
-  raw/P01/S1/
-    session.json        participant, session, distance, condition, sound-check result, settings
+  manifest.csv          every clip (participant, session, label, probe on/off, device, distance, condition)
+  sessions.csv          one row per run: date, laptop, clip counts, sound-check SNR, notes
+  raw/P01/S1/           (portable sessions: raw/JX-P01/S1/)
+    session.json        participant, laptop model, distance, condition, repetitions per class, sound check
     cues.csv            every prompted trial: label, GO time, probe on/off, status (ok / discarded / practice)
-    session.wav         the full continuous recording (16-bit, 48 kHz)
+    session.wav         the full continuous recording (16-bit)
     clips/0004_NEXT.wav one 3 s clip per good trial
     clips.csv           clip index
 ```
 
-About 50 MB per session.
+This comes to about 50 MB per run with the defaults.
 
-**After a session**, glance at the printed summary. Re-record if it reports a
+**After a run**, glance at the printed summary. Re-record if it reports a
 sound-check problem or audio dropouts.
 
 To inspect a clip:
@@ -304,7 +399,7 @@ If the clip timing in `configs/default.yaml` is ever changed, run
 `echospeak segment data/raw/P01/S1` (for each session) and then
 `echospeak index` to re-cut every clip from the saved full recordings.
 
-### 5.4 Reserve the test sets (once, after collection)
+### 5.6 Reserve the test sets (once, after collection)
 
 ```bash
 echospeak index     # prints a participant × class count table (the manifest is already up to date)
@@ -318,7 +413,7 @@ tuning, and never tune on it.**
 | Test set | Contents | Proposal evaluation |
 |---|---|---|
 | `unseen_users` | all clips of 2 held-out participants | (3) unseen participants |
-| `known_users` | 15% of each remaining participant's trials, stratified by class | (1) held-out trials from known users |
+| `known_users` | whole takes held out per participant and class, about 15%. With 2 sessions × 2 takes per class, 1 take of 4 | (1) held-out trials from known users |
 | `new_condition` | sessions tagged with the given `--condition`s | (2) altered placement |
 | `probe_off` | all probe-off clips (automatic) | probe-off control |
 
@@ -331,13 +426,14 @@ training.
 
 ### 6.1 Cross-validation protocols (development set only)
 
-`echospeak cv --protocol …` has three protocols:
+`echospeak cv --protocol …` has four protocols:
 
 | Protocol | Folds | Corresponds to |
 |---|---|---|
-| `trial` | stratified 5-fold over trials; every user appears in train and validation | known users |
+| `trial` | stratified 5-fold over **takes**, so a take's clips are never split; every user appears in train and validation | known users |
 | `session` | hold out one recording session per participant per fold | new session |
 | `user` | group k-fold by participant (`--folds 0` = leave-one-participant-out) | unseen users |
+| `device` | leave one laptop model out (only when data comes from several laptop models) | a laptop never seen in training |
 
 Each run writes the following to `--out`:
 * `report.md`: mean ± sd accuracy, macro-F1, the pooled confusion matrix,
@@ -451,7 +547,7 @@ the held-out test sets.
 
 | Metric | Definition |
 |---|---|
-| Accuracy | argmax over the 10 classes equals the label |
+| Accuracy | argmax over all classes equals the label |
 | Macro-F1 | unweighted mean of per-class F1 |
 | Command-vs-non-command accuracy | binary correctness of "is this a command?" |
 | Correct trigger rate | command trials whose top class is correct and has probability ≥ threshold |
@@ -466,7 +562,7 @@ the held-out test sets.
 ## 8. Live demo
 
 The demo: a participant sits about 10 cm from the laptop microphone and silently
-mouths "NEXT". The screen shows an acoustic motion trace, the predicted command
+mouths "NEXT" (or "GO"). The screen shows an acoustic motion trace, the predicted command
 and its confidence, and the slide advances. Chewing or yawning must not trigger
 anything.
 
@@ -484,8 +580,9 @@ anything.
    ```
    * The window shows the motion trace, per-class probability bars with the
      threshold line, and the triggered command.
-   * `--action keys` presses → for NEXT and ← for BACK (macOS: give the terminal
-     Accessibility permission). Put the slides in front.
+   * `--action keys` presses → for NEXT or GO, ← for BACK, Return for OKAY and
+     Escape for STOP (macOS: give the terminal Accessibility permission). Put the
+     slides in front. The mapping is `MAC_KEYS` in `src/echospeak/live.py`.
    * `--no-gui` prints predictions in the terminal instead.
 3. **Rehearse.**
    * Check that NEXT advances the slide and that chewing and yawning do not.
@@ -499,18 +596,19 @@ anything.
 | Week | Milestone |
 |---|---|
 | 1 | Milestone 1 (§4): tones captured, motion visible at 5–15 cm; choose the laptop and working distance |
-| 2 | Pilot: 2–3 team members, 2 sessions each with `collect.py`; run `cv --protocol trial` to check the pipeline on real data; adjust the protocol |
-| 3–4 | Main collection: ≥ 10 participants × 2 sessions (+ optional far/noisy sessions) |
+| 2 | Pilot: 2–3 team members, 2 sessions each with `data_collection/collect.py`; run `cv --protocol trial` to check the pipeline on real data; adjust the protocol and per-class repetitions |
+| 3–4 | Main collection: ≥ 10 participants × 2 sessions (+ optional far/noisy sessions); merge any portable recordings |
 | 4 | `split`; baselines (CNN, CNN-GRU, CNN-Transformer); feature ablation |
 | 5 | Tuning plus ensemble; distance and noise tests |
 | 6 | Final training, the one-time test evaluation, false activations per minute on continuous recordings, the live demo, and the report |
 
 **Fallbacks:**
-* **Low accuracy:** reduce to four commands first, choosing the most distinct
-  ones by the pilot's confusion matrix (e.g. NEXT, BACK, SELECT, STOP).
-  Restrict the vocabulary with
-  `--set "data.commands=[NEXT, BACK, SELECT, STOP]"` for `cv`, `tune` and
-  `train`; clips with other labels are ignored. Expand to six afterwards.
+* **Choosing the final command set:** all 8 words are recorded. After the
+  pilot or the main collection, look at the CV confusion matrix and keep the
+  words that are confused least, e.g. 6 of the 8. Restrict the vocabulary with
+  `--set "data.commands=[BACK, MENU, BANANA, GO, OKAY, STOP]"` for `cv`, `tune`,
+  `train` and `test`; clips of the other words are ignored. With low accuracy,
+  start with the 4 most distinct words and expand later.
 * **Weak echoes:**
   * raise the volume or `probe.amplitude` (without clipping);
   * sit closer (5–8 cm from the microphone);
@@ -523,10 +621,11 @@ anything.
 ## 10. Repository layout
 
 ```
-collect.py                one-command data collection (sound check, prompts, clips, manifest)
+data_collection/           collect.py + README: one-command collection on the main laptop (writes data/)
+data_collection_portable/  standalone collect.py + README + requirements.txt for any other laptop (merge with `echospeak merge`)
 configs/default.yaml      all settings (probe, clip timing, features, model, augmentation, training, gate)
 src/echospeak/
-  collect.py              collection session logic and participant UI
+  collect.py              collection session logic, participant UI, merging portable recordings
   probe.py                probe synthesis, GO beep, I/Q demodulation, tone SNR
   segment.py              beep-based alignment and clip cutting
   data.py                 manifest, held-out splits, CV folds, baseband cache, dataset

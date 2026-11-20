@@ -156,7 +156,7 @@ def run_test(bundle: Bundle, groups: dict[str, list[Clip]], out_dir: str | Path,
 
 def _breakdown(clips: list[Clip], probs: np.ndarray, y: np.ndarray) -> dict:
     out = {}
-    for key in ("participant", "distance_cm", "orientation", "condition", "session"):
+    for key in ("participant", "device", "distance_cm", "condition", "session"):
         groups = defaultdict(list)
         for i, c in enumerate(clips):
             groups[getattr(c, key) or "-"].append(i)
